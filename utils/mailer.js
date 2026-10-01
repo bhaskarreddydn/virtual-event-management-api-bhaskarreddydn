@@ -1,102 +1,84 @@
-const nodemailer = require('nodemailer');
-
-let cachedTransporter = null;
-
 /**
- * Creates or retrieves the Nodemailer transporter based on environment configuration.
- * Supports:
- * 1. Custom SMTP / Brevo / SendGrid / Mailgun / Gmail
- * 2. Ethereal Email (Auto-generated zero-config test mailbox for local dev & testing)
+ * Brevo (formerly Sendinblue) Transactional Email Client
+ * Sends emails via Brevo REST API v3 (POST https://api.brevo.com/v3/smtp/email)
  */
-async function getTransporter() {
-  if (cachedTransporter) {
-    return cachedTransporter;
-  }
 
-  // If explicit SMTP credentials are provided
-  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-    cachedTransporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      }
-    });
-    return cachedTransporter;
-  }
-
-  // In test environment, use a mock transporter to avoid network delays
-  if (process.env.NODE_ENV === 'test') {
-    cachedTransporter = {
-      sendMail: async (mailOptions) => {
-        return {
-          messageId: `test-msg-${Date.now()}`,
-          response: '250 Test message accepted',
-          envelope: { from: mailOptions.from, to: mailOptions.to },
-          previewUrl: 'https://ethereal.email/message/test-preview'
-        };
-      }
-    };
-    return cachedTransporter;
-  }
-
-  // Default fallback: create an ephemeral Ethereal test account (zero credentials required)
-  try {
-    const testAccount = await nodemailer.createTestAccount();
-    cachedTransporter = nodemailer.createTransport({
-      host: 'smtp.ethereal.email',
-      port: 587,
-      secure: false,
-      auth: {
-        user: testAccount.user,
-        pass: testAccount.pass
-      }
-    });
-    console.log('[Mailer] Ethereal test SMTP initialized. Previews will be logged to console.');
-    return cachedTransporter;
-  } catch (err) {
-    console.warn('[Mailer] Could not create Ethereal account, falling back to mock logger:', err.message);
-    cachedTransporter = {
-      sendMail: async (mailOptions) => {
-        console.log(`[Mailer Mock] Email to ${mailOptions.to} subject: "${mailOptions.subject}"`);
-        return { messageId: `mock-msg-${Date.now()}` };
-      }
-    };
-    return cachedTransporter;
-  }
-}
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 /**
- * Send an email asynchronously using Promise / async-await
+ * Send an email using Brevo REST API v3
  * @param {Object} options - { to, subject, text, html }
+ * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
 async function sendEmail({ to, subject, text, html }) {
-  try {
-    const transporter = await getTransporter();
-    const fromAddress = process.env.EMAIL_FROM || '"Virtual Event Platform" <noreply@virtualevent.local>';
-
-    const info = await transporter.sendMail({
-      from: fromAddress,
-      to,
-      subject,
-      text,
-      html
-    });
-
-    const previewUrl = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : info.previewUrl;
-    if (previewUrl) {
-      console.log(`[Mailer] Message preview URL: ${previewUrl}`);
-    }
-
+  // In test environment, mock sending to avoid network latency and external dependencies
+  if (process.env.NODE_ENV === 'test') {
     return {
       success: true,
-      messageId: info.messageId,
-      previewUrl: previewUrl || null
+      messageId: `mock-brevo-${Date.now()}`
+    };
+  }
+
+  const apiKey = process.env.BREVO_API_KEY;
+  if (!apiKey) {
+    const errorMsg = 'BREVO_API_KEY is not defined in environment variables';
+    console.error(`[Brevo Error] ${errorMsg}`);
+    return { success: false, error: errorMsg };
+  }
+
+  const senderName = process.env.BREVO_SENDER_NAME || 'Virtual Event Platform';
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+
+  if (!senderEmail) {
+    const errorMsg = 'BREVO_SENDER_EMAIL is not configured in .env (must be a verified Brevo sender)';
+    console.error(`[Brevo Error] ${errorMsg}`);
+    return { success: false, error: errorMsg };
+  }
+
+  const payload = {
+    sender: {
+      name: senderName,
+      email: senderEmail
+    },
+    to: [
+      {
+        email: to
+      }
+    ],
+    subject: subject,
+    htmlContent: html,
+    textContent: text
+  };
+
+  try {
+    const response = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'accept': 'application/json',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      console.log(`[Brevo] Email successfully sent to ${to}. Message ID: ${data.messageId}`);
+      return {
+        success: true,
+        messageId: data.messageId
+      };
+    }
+
+    const errorMessage = data.message || `Brevo API HTTP ${response.status}: ${response.statusText}`;
+    console.error(`[Brevo Error] Failed to send email: ${errorMessage}`, data);
+    return {
+      success: false,
+      error: errorMessage
     };
   } catch (error) {
-    console.error('[Mailer Error] Failed to send email:', error.message);
+    console.error(`[Brevo Error] Network or unexpected failure:`, error.message);
     return {
       success: false,
       error: error.message
@@ -105,6 +87,5 @@ async function sendEmail({ to, subject, text, html }) {
 }
 
 module.exports = {
-  sendEmail,
-  getTransporter
+  sendEmail
 };

@@ -28,7 +28,7 @@ virtual-event-management-api/
 │   └── eventService.js
 ├── test/                 # Automated test suite (tap & supertest)
 │   └── server.test.js
-├── utils/                # Helper utilities (Nodemailer setup & transports)
+├── utils/                # Helper utilities (Brevo REST API client)
 │   └── mailer.js
 ├── .env.example          # Sample environment variables
 ├── app.js                # Express app entrypoint & middleware assembly
@@ -42,7 +42,7 @@ virtual-event-management-api/
 - **Services**: Execute domain business logic (password hashing, JWT token generation, event scheduling checks, capacity rules, and asynchronous email triggering).
 - **Models**: Encapsulate in-memory data stores (`users[]` and `events[]`) providing isolated query, creation, update, and deletion methods.
 - **Middleware**: Intercepts requests for token verification (`verifyToken`) and role-based permissions (`requireRole('organizer')`).
-- **Utils**: Configures email sending (supporting zero-config test mailboxes or custom SMTP providers).
+- **Utils**: Implements transactional email delivery via Brevo REST API v3.
 
 ---
 
@@ -62,47 +62,34 @@ virtual-event-management-api/
    - Strict capacity limit enforcement.
    - Attendee registration tracking and cancellation support.
 4. **Asynchronous Email Notifications**:
-   - Built using `async/await` and Promises via `nodemailer`.
-   - On successful event registration, an email is automatically dispatched with event details, time, and meeting link.
-   - **Zero-config developer preview**: If no SMTP credentials are configured, the service falls back to Nodemailer's ephemeral Ethereal test inbox, logging immediate preview URLs to the console.
-   - **Production-ready SMTP**: Seamlessly connects to free providers like Brevo, Gmail App Passwords, SendGrid, or Resend.
+   - Built using `async/await` and Promises calling Brevo's REST API v3 (`https://api.brevo.com/v3/smtp/email`) directly over HTTPS.
+   - On successful event registration, a transactional confirmation email is automatically dispatched with event details, schedule, and virtual meeting link.
+   - Fully decoupled and production-ready: No bulky SMTP libraries needed. Utilizes lightweight native Node.js fetch.
 
 ---
 
-## Email Notification Setup & Free Alternatives
+## Email Notification Setup (Brevo REST API)
 
-The backend supports any standard SMTP provider or zero-setup local dev inbox:
+This platform exclusively uses **Brevo (formerly Sendinblue)** as its transactional email provider. SMTP, Gmail, and other local transports have been completely removed.
 
-### Option 1: Zero-Setup Local Dev / Testing (Default)
-Leave `SMTP_USER` and `SMTP_PASS` empty in `.env`. The system automatically generates an ephemeral **Ethereal Email** test inbox and prints email preview URLs directly to your terminal.
+### 1. Obtain Your Brevo API Key
+1. Log in or create a free account at [brevo.com](https://www.brevo.com) (free tier includes 300 emails/day).
+2. Click your account name in the top-right corner and select **SMTP & API**.
+3. Under the **API Keys** tab, click **Generate a new API key**.
+4. Name your key (e.g., `Virtual Event Management API`) and click **Generate**.
+5. Copy your key (starts with `xkeysib-...`).
 
-### Option 2: Brevo (Formerly Sendinblue) — Recommended (300 Free Emails / Day)
-1. Sign up for a free account at [brevo.com](https://www.brevo.com).
-2. Go to **Settings** > **SMTP & API** > **SMTP**.
-3. Generate a new SMTP Key.
-4. Update your `.env`:
-   ```env
-   SMTP_HOST=smtp-relay.brevo.com
-   SMTP_PORT=587
-   SMTP_SECURE=false
-   SMTP_USER=your_brevo_account_email@domain.com
-   SMTP_PASS=your_generated_brevo_smtp_key
-   EMAIL_FROM="Virtual Event Platform <your_verified_sender@domain.com>"
-   ```
+### 2. Configure Verified Sender & Authorize IP
+- **Verified Sender**: Brevo requires emails to be sent from an email address that is verified on your account. Go to **Senders, Domains & Dedicated IPs** > **Senders** in your Brevo dashboard to confirm your verified sender address (by default, the email you registered with).
+- **Authorized IPs**: If Brevo restricts API requests from unrecognized IP addresses, authorize your current public IP under [Brevo Authorized IPs](https://app.brevo.com/security/authorised_ips).
 
-### Option 3: Gmail App Password
-1. In your Google Account, enable **2-Step Verification**.
-2. Navigate to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
-3. Create an App Password (name it "Virtual Event Platform").
-4. Update `.env`:
-   ```env
-   SMTP_HOST=smtp.gmail.com
-   SMTP_PORT=465
-   SMTP_SECURE=true
-   SMTP_USER=your_gmail@gmail.com
-   SMTP_PASS=your_16_digit_app_password
-   EMAIL_FROM="Virtual Event Platform <your_gmail@gmail.com>"
-   ```
+### 3. Update Your `.env` File
+Add your Brevo credentials to your `.env` file:
+```env
+BREVO_API_KEY=xkeysib-your_generated_api_key_here
+BREVO_SENDER_NAME="Virtual Event Platform"
+BREVO_SENDER_EMAIL=your_verified_brevo_account_email@domain.com
+```
 
 ---
 
@@ -128,7 +115,7 @@ Copy `.env.example` to `.env`:
 ```bash
 cp .env.example .env
 ```
-Ensure `PORT` and `JWT_SECRET` are set. Configure SMTP credentials if live email delivery is desired.
+Ensure `PORT`, `JWT_SECRET`, and `BREVO_API_KEY` are configured in `.env`.
 
 ### 4. Run the Automated Test Suite
 Verify that all 29 test suites and 65 assertions pass:
@@ -325,8 +312,7 @@ The server will start on `http://localhost:3000`.
       "email": "bob@example.com",
       "registeredAt": "2026-10-01T09:05:00.000Z"
     },
-    "emailSent": true,
-    "previewUrl": "https://ethereal.email/message/..."
+    "emailSent": true
   }
   ```
 
